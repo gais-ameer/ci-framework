@@ -1,0 +1,240 @@
+---
+# Copyright 2026 Red Hat, Inc.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+
+- name: Deploy the dz-ceph clusters
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _architecture_dir: >-
+      {{ lookup('env', 'HOME') }}/src/github.com/openstack-k8s-operators/architecture
+    _common_vars: "{{ lookup('env', 'HOME') }}/reproducer-variables.yml"
+    _inventory: >-
+      {{ lookup('env', 'HOME') }}/ci-framework-data/artifacts/zuul_inventory.yml
+    _parameters_dir: >-
+      {{ lookup('env', 'HOME') }}/ci-framework-data/parameters
+    _target_inventory: "{{ _parameters_dir }}/dz-ceph-inventory.yml"
+    _clusters:
+      - az: az0
+        rack: r0
+        group: r0-ceph
+        host: r0-compute-1
+        network_range: 192.168.122.0/24
+      - az: az1
+        rack: r1
+        group: r1-ceph
+        host: r1-compute-1
+        network_range: 192.168.123.0/24
+      - az: az2
+        rack: r2
+        group: r2-ceph
+        host: r2-compute-1
+        network_range: 192.168.124.0/24
+    cifmw_cephadm_pools:
+      - name: vms
+        pg_autoscale_mode: true
+        target_size_ratio: 0.2
+        application: rbd
+      - name: volumes
+        pg_autoscale_mode: true
+        target_size_ratio: 0.3
+        application: rbd
+        trash_purge_enabled: true
+      - name: backups
+        pg_autoscale_mode: true
+        target_size_ratio: 0.1
+        application: rbd
+      - name: images
+        pg_autoscale_mode: true
+        target_size_ratio: 0.2
+        application: rbd
+      - name: cephfs.cephfs.meta
+        pg_autoscale_mode: true
+        target_size_ratio: 0.1
+        application: cephfs
+      - name: cephfs.cephfs.data
+        pg_autoscale_mode: true
+        target_size_ratio: 0.1
+        application: cephfs
+
+  tasks:
+    - name: Verify Ceph hosts exist in the deployment inventory
+      ansible.builtin.assert:
+        that:
+          - item.host in hostvars
+        fail_msg: "The Ceph host {{ item.host }} is missing from the inventory"
+      loop: "{{ _clusters }}"
+      loop_control:
+        label: "{{ item.host }}"
+
+    - name: Create Ceph-only inventory groups
+      ansible.builtin.copy:
+        dest: "{{ _target_inventory }}"
+        mode: "0644"
+        content: |
+          ---
+          all:
+            children:
+          {% for cluster in _clusters %}
+              {{ cluster.group }}:
+                hosts:
+                  {{ cluster.host }}: {}
+          {% endfor %}
+
+    - name: Generate a shared CephX key
+      cifmw.general.cephx_key:
+        cipher: "{{ cifmw_ceph_key_cipher | default('aes') }}"
+      register: cephx
+      no_log: "{{ cifmw_nolog | default(true) | bool }}"
+
+    - name: Build the shared CephX key definition
+      ansible.builtin.set_fact:
+        cifmw_cephadm_keys:
+          - name: client.openstack
+            key: "{{ cephx.key }}"
+            mode: "0600"
+            caps:
+              mgr: allow *
+              mon: profile rbd
+              osd: "{{ cifmw_cephadm_pools | map(attribute='name') |
+                      map('regex_replace', '^(.*)$', 'profile rbd pool=\\1') |
+                      join(', ') }}"
+      no_log: "{{ cifmw_nolog | default(true) | bool }}"
+
+    - name: Write the shared CephX variables
+      ansible.builtin.copy:
+        dest: "{{ _parameters_dir }}/dz-ceph-cephx.yml"
+        mode: "0600"
+        content: >-
+          {{ {'cifmw_cephadm_keys': cifmw_cephadm_keys} | to_nice_yaml }}
+      no_log: "{{ cifmw_nolog | default(true) | bool }}"
+
+    - name: Ensure per-cluster client directories exist
+      ansible.builtin.file:
+        path: "/tmp/dz-ceph-{{ item.az }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ _clusters }}"
+      loop_control:
+        label: "{{ item.az }}"
+
+    - name: Write per-cluster Ceph variables
+      ansible.builtin.copy:
+        dest: "{{ _parameters_dir }}/dz-ceph-{{ item.az }}.yml"
+        mode: "0644"
+        content: "{{ _ceph_vars | to_nice_yaml }}"
+      vars:
+        _ceph_vars:
+          cifmw_admin_user: "ceph-admin-{{ item.az }}"
+          cifmw_cephadm_cluster: "{{ item.az }}"
+          cifmw_cephadm_ssh_user: "ceph-admin-{{ item.az }}"
+          cifmw_cephadm_bootstrap_conf: >-
+            /tmp/dz-ceph-{{ item.az }}/initial_ceph.conf
+          cifmw_cephadm_spec_ansible_host: >-
+            /tmp/dz-ceph-{{ item.az }}/ceph_spec.yml
+          cifmw_ceph_client_fetch_dir: "/tmp/dz-ceph-{{ item.az }}"
+          cifmw_ceph_client_values_post_ceph_path_dst: >-
+            {{ _architecture_dir }}/examples/dt/dz-ceph/edpm-post-ceph/nova-ceph/{{ item.rack }}/values.yaml
+          cifmw_ceph_client_values_post_ceph_path_src: >-
+            {{ _architecture_dir }}/examples/dt/dz-ceph/edpm-post-ceph/nova-ceph/{{ item.rack }}/values.yaml
+          cifmw_ceph_client_vars: "/tmp/dz-ceph-{{ item.az }}/client.yml"
+          cifmw_ceph_spec_path: >-
+            /tmp/dz-ceph-{{ item.az }}/ceph_spec.yml
+          cifmw_ceph_spec_path_initial_conf: >-
+            /tmp/dz-ceph-{{ item.az }}/initial_ceph.conf
+          cifmw_ceph_target: "{{ item.group }}"
+          ssh_network_range: "{{ item.network_range }}"
+          storage_mgmt_network_range: "{{ item.network_range }}"
+          storage_network_range: "{{ item.network_range }}"
+      loop: "{{ _clusters }}"
+      loop_control:
+        label: "{{ item.az }}"
+
+    - name: Check for reproducer variables
+      ansible.builtin.stat:
+        path: "{{ _common_vars }}"
+      register: _common_vars_stat
+
+    - name: Launch Ceph deployments in parallel
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['ansible-playbook', '-i', _inventory, '-i', _target_inventory,
+             playbook_dir + '/ceph.yml']
+            + (_common_vars_stat.stat.exists |
+               ternary(['-e', '@' + _common_vars], []))
+            + ['-e', '@' + _parameters_dir + '/dz-ceph-' + item.az + '.yml',
+               '-e', '@' + _parameters_dir + '/dz-ceph-cephx.yml',
+               '--skip-tags=cephx']
+          }}
+      async: 7200
+      poll: 0
+      changed_when: true
+      loop: "{{ _clusters }}"
+      loop_control:
+        label: "{{ item.az }}"
+      register: _ceph_jobs
+
+    - name: Wait for Ceph deployments
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ _ceph_jobs.results }}"
+      loop_control:
+        label: "{{ item.item.az }}"
+      register: _ceph_job
+      until: _ceph_job.finished
+      retries: 720
+      delay: 10
+
+    - name: Read Ceph client variables
+      ansible.builtin.slurp:
+        path: "/tmp/dz-ceph-{{ item.az }}/client.yml"
+      loop: "{{ _clusters }}"
+      loop_control:
+        label: "{{ item.az }}"
+      register: _ceph_client_vars
+      no_log: "{{ cifmw_nolog | default(true) | bool }}"
+
+    - name: Put cluster FSIDs in the control-plane configuration
+      ansible.builtin.replace:
+        path: >-
+          {{ _architecture_dir }}/examples/dt/dz-ceph/control-plane/ceph-storage.yaml
+        regexp: "CHANGE_TO_CEPH_FSID_{{ item.item.az | upper }}"
+        replace: >-
+          {{ (item.content | b64decode | from_yaml).cifmw_ceph_client_fsid }}
+      loop: "{{ _ceph_client_vars.results }}"
+      loop_control:
+        label: "{{ item.item.az }}"
+      no_log: "{{ cifmw_nolog | default(true) | bool }}"
+
+    - name: Write the combined Ceph client secret
+      ansible.builtin.copy:
+        dest: >-
+          {{ _architecture_dir }}/examples/dt/dz-ceph/control-plane/ceph-conf-files.yaml
+        mode: "0600"
+        content: |
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ceph-conf-files
+            namespace: openstack
+          type: Opaque
+          data:
+          {% for cluster in _clusters %}
+            {{ cluster.az }}.client.openstack.keyring: {{ lookup('file', '/tmp/dz-ceph-' + cluster.az + '/' + cluster.az + '.client.openstack.keyring', rstrip=False) | b64encode }}
+            {{ cluster.az }}.conf: {{ lookup('file', '/tmp/dz-ceph-' + cluster.az + '/' + cluster.az + '.conf', rstrip=False) | b64encode }}
+          {% endfor %}
+      no_log: "{{ cifmw_nolog | default(true) | bool }}"

@@ -41,8 +41,12 @@ data:
         ansible:
 {%   set ctlplane_rack = 'ctlplane' + rack %}
           ansibleHost: {{ cifmw_networking_env_definition.instances[instance].networks[ctlplane_rack].ip_v4 }}
-{%   if original_content.data.nodeset.nodes['edpm-' ~ instance].ansible.ansibleVars is defined %}
-          ansibleVars: {{ original_content.data.nodeset.nodes['edpm-' ~ instance].ansible.ansibleVars }}
+{%   set original_node = original_content.data.nodeset.nodes.get(
+       'edpm-' ~ instance,
+       original_content.data.nodeset.nodes.get(instance)
+     ) %}
+{%   if original_node and original_node.ansible.ansibleVars is defined %}
+          ansibleVars: {{ original_node.ansible.ansibleVars }}
 {%   endif %}
         hostName: {{ instance }}
         networks:

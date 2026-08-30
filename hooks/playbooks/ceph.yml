@@ -373,12 +373,14 @@
         cidr: 64
 
     - name: Generate a cephx key
+      tags: cephx
       cephx_key:
         cipher: "{{ cifmw_ceph_key_cipher | default('aes') }}"
       register: cephx
       no_log: "{{ cifmw_nolog | default(true) | bool }}"
 
     - name: Set cifmw_cephadm_keys with the cephx key and cifmw_cephadm_pools
+      tags: cephx
       ansible.builtin.set_fact:
         cifmw_cephadm_keys:
           - name: client.openstack
