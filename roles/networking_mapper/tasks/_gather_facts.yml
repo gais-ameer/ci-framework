@@ -60,6 +60,16 @@
       loop: "{{ _networking_mapper_instance_names }}"
 
     - name: Save instances refreshed facts for troubleshooting purposes
+      vars:
+        cifmw_networking_mapper_instances_facts: >-
+          {% set _instances_facts = {} -%}
+          {% for instance_name in _networking_mapper_instance_names -%}
+          {%   set _ = _instances_facts.update({
+                 instance_name: hostvars[instance_name].ansible_facts |
+                                default({})
+               }) -%}
+          {% endfor -%}
+          {{ _instances_facts }}
       ansible.builtin.copy:
         dest: >-
           {{
@@ -69,12 +79,5 @@
               'networking-mapper-instances-facts.yml'
             ] | path_join
           }}
-        content: >-
-          {{
-            dict(hostvars) |
-            dict2items |
-            selectattr('key', 'in', _networking_mapper_instance_names) |
-            items2dict |
-            to_nice_yaml
-          }}
+        content: "{{ cifmw_networking_mapper_instances_facts | to_nice_yaml }}"
         mode: "0644"
