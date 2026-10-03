@@ -13,7 +13,14 @@
       az2: az2
   environment:
       OS_CLOUD: "{{ cifmw_cinder_backups_os_cloud | default('default') }}"
+      PATH: "{{ ansible_env.PATH }}:/var/lib/ansible/.local/bin"
+      OS_CACERT: "{{ cifmw_cinder_backups_os_cacert }}"
   tasks:
+      - name: Install openstack CLI
+        ansible.builtin.pip:
+            name: python-openstackclient
+            state: present
+
       - name: Wait for cinder-backup services to be up in all availability zones
         block:
             - name: Check cinder-backup service status
